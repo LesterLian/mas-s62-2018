@@ -1,6 +1,8 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+)
 
 /*
 A note about the provided keys and signatures:
@@ -114,21 +116,113 @@ func Forge() (string, Signature, error) {
 	msgslice = append(msgslice, GetMessageFromString("3"))
 	msgslice = append(msgslice, GetMessageFromString("4"))
 
+	// Check which hash has been used
+	zeroUsed := Message{}
+	oneUsed := Message{}
+	zeroUsedSigs := [256]Block{}
+	oneUsedSigs := [256]Block{}
+	for _, sig := range sigslice {
+		for i, block := range sig.Preimage {
+			hash := block.Hash()
+			if pub.ZeroHash[i] == hash {
+				zeroUsed[i/8] |= 0x01 << (7 - (i % 8))
+				zeroUsedSigs[i] = block
+			} else if pub.OneHash[i] == hash {
+				oneUsed[i/8] |= 0x01 << (7 - (i % 8))
+				oneUsedSigs[i] = block
+			} else {
+				panic("no match")
+			}
+		}
+	}
+	// Calculate forgary difficulty
+	difficulty := 0
+	for i := range zeroUsed {
+		allTaken := zeroUsed[i] & oneUsed[i]
+		for j := 0; j < 8; j++ {
+			bit := allTaken >> (7 - j) & 1
+			if bit == 0 {
+				difficulty += 1
+			}
+		}
+	}
+	fmt.Printf("Zero taken: %x\n", zeroUsed)
+	fmt.Printf("One taken: %x\n", oneUsed)
+	fmt.Printf("Difficulty: %d\n", 1<<difficulty)
+
+	// Recover message 1 from signature, because verification was failed
+	// The cause was Sign and Verify functions were wrongly implemented.
+	// pre1 := Signature{}
+	// for i, block := range sig1.Preimage {
+	// 	pre1.Preimage[i] = block.Hash()
+	// }
+	// msg1 := Message{}
+	// for i, block := range pre1.Preimage {
+	// 	if pub.ZeroHash[i] == block {
+	// 		msg1[i/8] &= ^(0x01 << (7 - (i % 8)))
+	// 	} else if pub.OneHash[i] == block {
+	// 		msg1[i/8] |= 0x01 << (7 - (i % 8))
+	// 	} else {
+	// 		panic("no match")
+	// 	}
+	// }
+	// fmt.Printf("msg1: %x\n", msgslice[0])
+	// fmt.Printf("msg1 computed: %x\n", msg1)
+
 	fmt.Printf("ok 1: %v\n", Verify(msgslice[0], pub, sig1))
 	fmt.Printf("ok 2: %v\n", Verify(msgslice[1], pub, sig2))
 	fmt.Printf("ok 3: %v\n", Verify(msgslice[2], pub, sig3))
 	fmt.Printf("ok 4: %v\n", Verify(msgslice[3], pub, sig4))
 
-	msgString := "my forged message"
-	var sig Signature
+	// Check if a message contains only bits used in previous signatures
+	isForgeable := func(msgString string, output chan<- string) {
+		forgeMsg := GetMessageFromString(msgString)
+		forgeable := Message{}
 
-	// your code here!
-	// ==
-	// Geordi La
-	// ==
+		for i, block := range forgeMsg {
+			forgeable[i] = block & oneUsed[i]
+			forgeable[i] |= ^block & zeroUsed[i]
+			if forgeable[i] != 0xff {
+				// fmt.Printf("%d notforgeable: %x\n", i, block)
+				output <- ""
+				return
+			}
+		}
 
-	return msgString, sig, nil
+		output <- msgString
+	}
 
+	// Find forgeable message asynchronously
+	var msgString string
+	q := make(chan string, 8)
+	go func(output chan<- string) {
+		for i := 555735188; ; i++ {
+			msgString = fmt.Sprintf("zlian forge %d", i)
+
+			go isForgeable(msgString, output)
+		}
+	}(q)
+	// Consume channel output and return a forgeable message
+	for {
+		result := <-q
+		// Skip non-forgable messages
+		if result == "" {
+			continue
+		}
+		fmt.Printf("Found forgeable message: %s\n", result)
+		// Find corresponding signature blocks
+		message := GetMessageFromString(result)
+		var forgeSig Signature
+		for i := 0; i < 256; i++ {
+			bit := message[i/8] >> (7 - i%8) & 0x01
+			if bit == 0 {
+				forgeSig.Preimage[i] = zeroUsedSigs[i]
+			} else {
+				forgeSig.Preimage[i] = oneUsedSigs[i]
+			}
+		}
+		return result, forgeSig, nil
+	}
 }
 
 // hint:
